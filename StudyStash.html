@@ -1,0 +1,353 @@
+// File: studystash/package.json
+{
+  "name": "studystash",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev --name init"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.0",
+    "next": "13.4.27",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "@prisma/client": "^4.9.0",
+    "prisma": "^4.9.0",
+    "stripe": "^8.243.0",
+    "@aws-sdk/client-s3": "^3.76.0",
+    "@aws-sdk/s3-request-presigner": "^3.52.0",
+    "pg": "^8.9.0"
+  }
+}
+
+// File: studystash/prisma/schema.prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+generator client {
+  provider = "prisma-client-js"
+}
+model User {
+  id        String  @id @default(uuid())
+  email     String  @unique
+  password  String
+  role      String  @default("student")
+  language  String  @default("en")
+  createdAt DateTime @default(now())
+}
+model Note {
+  id           String  @id @default(uuid())
+  authorId     String
+  author       User    @relation(fields: [authorId], references: [id])
+  title        String
+  description  String?
+  language     String
+  course       String?
+  price        Float
+  currency     String  @default("EUR")
+  fileUrl      String?
+  thumbnailUrl String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  isActive     Boolean @default(true)
+}
+model Purchase {
+  id          String   @id @default(uuid())
+  buyerId     String
+  buyer       User     @relation(fields: [buyerId], references: [id])
+  noteId      String
+  note        Note     @relation(fields: [noteId], references: [id])
+  amount      Float
+  currency    String   @default("EUR")
+  purchasedAt DateTime @default(now())
+}
+
+// File: studystash/prisma/seed.js
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+async function main() {
+  const user = await prisma.user.create({
+    data: {
+      email: 'demo@example.com',
+      password: 'hashed-password',
+      role: 'creator',
+      language: 'en'
+    }
+  });
+
+  const note = await prisma.note.create({
+    data: {
+      title: 'Intro to Algebra Notes',
+      description: 'A compact study guide for algebra basics.',
+      language: 'en',
+      course: 'Algebra I',
+      price: 4.99,
+      currency: 'EUR',
+      authorId: user.id
+    }
+  });
+
+  console.log({ user, note });
+}
+main()
+  .catch((e) => { console.error(e); process.exit(1); })
+  .finally(async () => { await prisma.$disconnect(); });
+
+// File: studystash/lib/db.js
+import { PrismaClient } from '@prisma/client';
+let prisma = global.prisma;
+if (!prisma) {
+  prisma = new PrismaClient();
+  global.prisma = prisma;
+}
+export default prisma;
+
+// File: studystash/lib/stripe.js
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' });
+export default stripe;
+
+// File: studystash/docker-compose.yml
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: studystash
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: studystash
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    command: npm run dev
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+
+// File: studystash/Dockerfile
+FROM node:18-alpine
+WORKDIR /usr/src/app
+COPY package*.json ./
+RUN npm install
+COPY . .
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
+
+// File: studystash/.env.example
+
+Database
+DATABASE_URL=postgresql://studystash:password@localhost:5432/studystash?schema=public
+
+Payments
+STRIPE_SECRET_KEY=sk_test_XXXXXXXXXXXXXXXXXXXXXXXX
+STRIPE_WEBHOOK_SECRET=whsec_xxx
+
+File storage (S3-compatible)
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=studystash-notes
+
+Frontend & auth
+FRONTEND_URL=http://localhost:3000
+NEXTAUTH_URL=http://localhost:3000
+JWT_SECRET=your_jwt_secret
+
+// File: studystash/translations.js
+const translations = {
+  en: {
+    welcome: "Welcome to StudyStash",
+    discover: "Discover notes",
+    upload: "Upload notes",
+    price: "Pricing",
+    login: "Login",
+    signup: "Sign up"
+  },
+  nl: {
+    welcome: "Welkom bij StudyStash",
+    discover: "Notities zoeken",
+    upload: "Notities uploaden",
+    price: "Prijzen",
+    login: "Inloggen",
+    signup: "Aanmelden"
+  }
+};
+export default translations;
+
+// File: studystash/pages/_app.js
+import { useEffect, useState, createContext } from 'react';
+import translations from '../translations';
+
+export const LocaleContext = createContext();
+
+export default function App({ Component, pageProps }) {
+  const [locale, setLocale] = useState('en');
+
+  useEffect(() => {
+    const saved = localStorage.getItem('locale');
+    if (saved) setLocale(saved);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('locale', locale);
+  }, [locale]);
+
+  const t = (key) => translations[locale][key] || key;
+
+  return (
+    <LocaleContext.Provider value={{ locale, setLocale, t }}>
+      <Component {...pageProps} t={t} locale={locale} />
+    </LocaleContext.Provider>
+  );
+}
+
+// File: studystash/pages/index.js
+import { useContext } from 'react';
+import { LocaleContext } from './_app';
+
+export default function Home() {
+  const { locale, setLocale, t } = useContext(LocaleContext) || { locale: 'en', setLocale: () => {}, t: (k) => k };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        
+
+StudyStash
+
+        <button onClick={() => setLocale(locale === 'en' ? 'nl' : 'en')}>
+          {locale === 'en' ? 'NL' : 'EN'}
+        
+      
+      <section style={{ marginTop: 40 }}>
+        
+{t('welcome')}
+{t('discover')} • {t('upload')} • {t('price')}
+
+  <section style={{ marginTop: 40 }}>
+    <h3>{t('discover')}</h3>
+    <ul>
+      <li>Sample note 1</li>
+      <li>Sample note 2</li>
+      <li>Sample note 3</li>
+    </ul>
+  </section>
+</div>
+  );
+}
+
+// File: studystash/pages/api/auth/register.js
+import bcrypt from 'bcryptjs';
+import prisma from '../../../lib/db';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).end();
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Missing email or password' });
+
+  const hashed = await bcrypt.hash(password, 10);
+  try {
+    const user = await prisma.user.create({
+      data: { email, password: hashed, role: 'student', language: 'en' }
+    });
+    res.status(201).json({ id: user.id, email: user.email });
+  } catch (e) {
+    res.status(400).json({ error: 'User already exists' });
+  }
+}
+
+// File: studystash/pages/api/notes/index.js
+import prisma from '../../../lib/db';
+
+export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    const notes = await prisma.note.findMany({ where: { isActive: true } });
+    return res.json(notes);
+  }
+  if (req.method === 'POST') {
+    const { title, description, language, course, price } = req.body;
+    // In a real app, verify user from auth middleware
+    const authorId = 'stub-author-id';
+    const note = await prisma.note.create({
+      data: { title, description, language, course, price, authorId }
+    });
+    return res.status(201).json(note);
+  }
+  res.status(405).end();
+}
+
+// File: studystash/pages/api/notes/[id].js
+import prisma from '../../../lib/db';
+export default async function handler(req, res) {
+  const { id } = req.query;
+  if (req.method === 'GET') {
+    const note = await prisma.note.findUnique({ where: { id } });
+    if (!note) return res.status(404).json({ error: 'Not found' });
+    return res.json(note);
+  }
+  res.status(405).end();
+}
+
+// File: studystash/pages/api/upload-url.js
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).end();
+  const { fileName, fileType } = req.body;
+
+  const s3 = new S3Client({
+    region: process.env.AWS_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    }
+  });
+
+  const key = notes/${Date.now()}_${fileName};
+  const cmd = new PutObjectCommand({
+    Bucket: process.env.AWS_S3_BUCKET,
+    Key: key,
+    ContentType: fileType,
+    ACL: 'private'
+  });
+
+  const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 3600 });
+  res.json({ uploadUrl, key });
+}
+
+// File: studystash/pages/api/purchase/create-checkout-session.js
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' });
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).end();
+
+  const { lineItems } = req.body; // Expect Stripe line items format
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: lineItems,
+    success_url: ${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID},
+    cancel_url: ${process.env.FRONTEND_URL}/cancel
+  });
+
+  res.json({ id: session.id });
+}
